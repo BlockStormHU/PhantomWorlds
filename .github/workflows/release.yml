@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. v2.2.0-bs.1 (upstream version plus our build number; -rc.1 makes a pre-release)'
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-upload:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    env:
+      TAG_NAME: ${{ inputs.version }}
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check the version, the branch and that the release is new
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-bs\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "::error::Versions look like v2.2.0-bs.1 (upstream version, -bs.<our build>), or v2.2.0-bs.1-rc.1 for a pre-release. Got '$TAG_NAME'."
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
+            echo "::error::Releases are cut from $DEFAULT_BRANCH. Pick it under 'Use workflow from'."
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG_NAME" > /dev/null 2>&1; then
+            echo "::error::Tag $TAG_NAME already exists. Releases are immutable, so pick the next version."
+            exit 1
+          fi
+          if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::error::A release or draft called $TAG_NAME already exists. A failed run leaves a draft: delete it and run again."
+            exit 1
+          fi
+          if [[ "$TAG_NAME" == *-rc.* ]]; then echo "PRERELEASE=true" >> "$GITHUB_ENV"; fi
+          echo "PLUGIN_VERSION=${TAG_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Java 21
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Stamp the version and build
+        run: |
+          mvn -B -ntp versions:set -DnewVersion="$PLUGIN_VERSION" -DgenerateBackupPoms=false
+          sed -i -E "s/^version: '.*'/version: '$PLUGIN_VERSION'/" src/main/resources/plugin.yml
+          grep -q "^version: '$PLUGIN_VERSION'" src/main/resources/plugin.yml
+          mvn -B -ntp verify
+          test -s "target/PhantomWorlds-$PLUGIN_VERSION.jar"
+
+      - name: Publish the release with the jar and checksums
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd target
+          sha256sum "PhantomWorlds-$PLUGIN_VERSION.jar" > SHA256SUMS
+          gh release create "$TAG_NAME" --draft --target "$GITHUB_SHA" --title "$TAG_NAME" --generate-notes ${PRERELEASE:+--prerelease}
+          gh release upload "$TAG_NAME" "PhantomWorlds-$PLUGIN_VERSION.jar" SHA256SUMS
+          gh release edit "$TAG_NAME" --draft=false

@@ -1,0 +1,53 @@
+name: Build
+
+on:
+  push:
+    branches: [ '**' ]
+    tags-ignore: [ '**' ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.idea/**'
+  pull_request:                        # only fork PRs run here; a same-repo PR shows the push run of its head commit
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.idea/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # a newer commit replaces the older run of the same branch; the default branch keeps every run
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  build:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    name: Build
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Java 21
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build
+        run: mvn -B -ntp verify
+
+      - name: Upload the plugin jar
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: PhantomWorlds-${{ github.sha }}
+          path: target/PhantomWorlds-*.jar
+          if-no-files-found: error
+          retention-days: 14
