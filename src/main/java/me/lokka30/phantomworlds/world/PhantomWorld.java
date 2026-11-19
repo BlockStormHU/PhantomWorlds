@@ -94,7 +94,8 @@ public class PhantomWorld {
 
     final WorldCreator worldCreator = new WorldCreator(name);
 
-    if(environment.equals(World.Environment.CUSTOM)) {
+    // Compared by name: World.Environment.CUSTOM does not exist on 1.8 (NoSuchFieldError on Carbon).
+    if("CUSTOM".equals(environment.name())) {
 
       worldCreator.environment(World.Environment.NORMAL);
     } else {
